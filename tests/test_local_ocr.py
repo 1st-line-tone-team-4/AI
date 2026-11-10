@@ -4,8 +4,8 @@ from unittest.mock import patch
 import pymupdf
 import pytest
 
-from ai.errors import ConfigurationError, InputError
-from ai.pdf import _choose_text, _tesseract_command, extract_pdf_with_quality
+from src.errors import ConfigurationError, InputError
+from src.pdf import _choose_text, _tesseract_command, extract_pdf_with_quality
 
 
 def test_selection_rejects_loss_and_never_concatenates():
@@ -19,19 +19,19 @@ def test_selection_rejects_loss_and_never_concatenates():
 
 
 def test_native_text_never_needs_tesseract(pdf_data):
-    with patch("ai.pdf._ocr_page", side_effect=AssertionError("must not OCR")):
+    with patch("src.pdf._ocr_page", side_effect=AssertionError("must not OCR")):
         doc, quality = extract_pdf_with_quality(pdf_data)
     assert len(doc.pages) == 2 and all(q.method == "pdf_text" for q in quality)
 
 
 def test_unresolved_local_quality_still_fails_strictly(pdf_data):
-    with patch("ai.pdf._ocr_page", return_value=("broken", 10)):
+    with patch("src.pdf._ocr_page", return_value=("broken", 10)):
         with pytest.raises(InputError, match="quality unresolved"):
             extract_pdf_with_quality(pdf_data, ocr_pages=[1])
 
 
 def test_missing_local_engine_reports_configuration(pdf_data):
-    with patch("ai.pdf._tesseract_command", side_effect=ConfigurationError("Tesseract missing")):
+    with patch("src.pdf._tesseract_command", side_effect=ConfigurationError("Tesseract missing")):
         with pytest.raises(ConfigurationError, match="Tesseract missing"):
             extract_pdf_with_quality(pdf_data, ocr_pages=[1])
 

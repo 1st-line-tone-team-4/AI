@@ -4,9 +4,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ai import evaluation, material, questions, tagging, teachback
-from ai.errors import InputError, InvalidResponseError, ModelRequiredError
-from ai.models import (
+from api.router import ModelRouter
+from src import analysis as concept_analysis
+from src import evaluation, grading, questions, tagging
+from src.errors import InputError, InvalidResponseError, ModelRequiredError
+from src.models import (
     AnalysisPart,
     AnalyzeRequest,
     AnswerJudgment,
@@ -23,11 +25,8 @@ from ai.models import (
     QuestionRequest,
     ShortAnswer,
     StoredQuestion,
-    StudentQuestion,
     TagRequest,
-    TeachbackRequest,
 )
-from ai.router import ModelRouter
 
 
 @pytest.fixture
@@ -79,7 +78,7 @@ def test_analyze_drafts_and_merge(router, transport, context):
             ]
         ),
     ]
-    result = material.analyze(AnalyzeRequest(chunks=context.chunks), router)
+    result = concept_analysis.analyze(AnalyzeRequest(chunks=context.chunks), router)
     assert result.state == "draft" and result.units[0].concepts[0].name == "Simple Present"
     assert "concept_id" not in result.model_dump_json()
     assert len(result.units[0].concepts[0].evidence) == 2
@@ -87,7 +86,7 @@ def test_analyze_drafts_and_merge(router, transport, context):
 
 def test_analysis_budget_before_call(router, transport, context):
     with pytest.raises(InputError, match="budget"):
-        material.analyze(
+        concept_analysis.analyze(
             AnalyzeRequest(chunks=context.chunks, chunk_chars=500, max_calls=1), router
         )
     transport.generate_json.assert_not_called()
@@ -104,13 +103,13 @@ def test_analysis_rejects_fake_chunk(router, transport, context):
         units=[DraftUnit(title="U", concepts=[draft])]
     )
     with pytest.raises(InvalidResponseError):
-        material.analyze(AnalyzeRequest(chunks=context.chunks), router)
+        concept_analysis.analyze(AnalyzeRequest(chunks=context.chunks), router)
 
 
 def test_empty_draft_is_distinct_and_never_retried(router, transport, context):
     transport.generate_json.return_value = AnalysisPart(units=[])
     with pytest.raises(InvalidResponseError, match=r"units=\[\]"):
-        material.analyze(AnalyzeRequest(chunks=context.chunks[:1], max_calls=1), router)
+        concept_analysis.analyze(AnalyzeRequest(chunks=context.chunks[:1], max_calls=1), router)
     transport.generate_json.assert_called_once()
     prompt = transport.generate_json.call_args.kwargs["prompt"]
     assert "No confirmed concept version is required" in prompt
@@ -118,7 +117,7 @@ def test_empty_draft_is_distinct_and_never_retried(router, transport, context):
 
 
 def test_confirmed_feature_prompt_guard_is_preserved():
-    from ai.context import COMMON, make_prompt
+    from src.context import COMMON, make_prompt
 
     assert make_prompt("Explain", {}).startswith(COMMON)
     assert "immutable concept version" in make_prompt("Explain", {})
@@ -242,12 +241,12 @@ def test_python_choice_grading_no_model(context, stored, choice, correct):
         stored_question=stored,
         answer=MultipleChoiceAnswer(type="multiple_choice", selected_option_ids=[choice]),
     )
-    assert questions.grade(request).is_correct == correct
+    assert grading.grade(request).is_correct == correct
 
 
 def test_unknown_option_rejected(context, stored):
     with pytest.raises(InputError):
-        questions.grade(
+        grading.grade(
             GradeRequest(
                 context=context,
                 stored_question=stored,
@@ -269,83 +268,21 @@ def test_semantic_answer_requires_model_and_evidence(router, transport, context,
         stored_question=short,
         answer=ShortAnswer(type="short_answer", text=" ＨＡＢＩＴＳ "),
     )
-    assert questions.grade(exact).is_correct
+    assert grading.grade(exact).is_correct
     request = exact.model_copy(
         update={"answer": ShortAnswer(type="short_answer", text="regular actions")}
     )
     with pytest.raises(ModelRequiredError):
-        questions.grade(request)
+        grading.grade(request)
     transport.generate_json.return_value = AnswerJudgment(
         status="correct", feedback="Equivalent", evidence=stored.question.evidence
     )
-    assert questions.grade(request, router).is_correct
+    assert grading.grade(request, router).is_correct
     transport.generate_json.return_value = AnswerJudgment(
         status="unverified", feedback="Unknown", evidence=[]
     )
     with pytest.raises(InvalidResponseError):
-        questions.grade(request, router)
-
-
-@pytest.mark.parametrize("persona", ["curious_beginner", "confused_friend", "exam_candidate"])
-@pytest.mark.parametrize("language", ["ko", "en"])
-def test_three_student_questions_then_final_answer_without_model(
-    router,
-    transport,
-    context,
-    persona,
-    language,
-):
-    transport.generate_json.return_value = StudentQuestion(question="Could you give an example?")
-    history = []
-    for count in range(3):
-        request = TeachbackRequest(
-            context=context,
-            concept_version_id=context.concepts[0].version.id,
-            explanation_language=language,
-            student_persona=persona,
-            history=history,
-            content="It describes habits.",
-            question_count=count,
-        )
-        result = teachback.respond(request, router)
-        assert result.question_count == count + 1
-        history = result.history
-    final = request.model_copy(
-        update={
-            "history": history,
-            "question_count": 3,
-            "content": "I walk daily.",
-            "final_answer": True,
-        }
-    )
-    assert teachback.respond(final).ready_for_evaluation
-    assert transport.generate_json.call_count == 3
-    with pytest.raises(InputError, match="QUESTION_LIMIT"):
-        teachback.respond(final.model_copy(update={"final_answer": False}), router)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Why? How?",
-        "Here is the answer.",
-        "The simple present describes habits and general truths. Why?",
-    ],
-)
-def test_student_leaks_or_multiple_questions_rejected(router, transport, context, text):
-    transport.generate_json.return_value = StudentQuestion(question=text)
-    with pytest.raises(InvalidResponseError):
-        teachback.respond(
-            TeachbackRequest(
-                context=context,
-                concept_version_id=context.concepts[0].version.id,
-                explanation_language="en",
-                student_persona="curious_beginner",
-                question_count=0,
-                content="habits",
-            ),
-            router,
-        )
+        grading.grade(request, router)
 
 
 def test_evaluation_only_uses_user_and_recomputes_weighted_v1(router, transport, context):

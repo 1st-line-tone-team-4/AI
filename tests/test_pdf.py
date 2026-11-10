@@ -2,9 +2,9 @@ import pymupdf
 import pytest
 from pydantic import ValidationError
 
-from ai.errors import InputError
-from ai.models import Document, Evidence, Page
-from ai.pdf import chunks, extract_pdf, validate_evidence
+from src.errors import InputError
+from src.models import Document, Evidence, Page
+from src.pdf import chunks, extract_pdf, validate_evidence
 
 
 def test_extract_pages_and_quotes(pdf_data):

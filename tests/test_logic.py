@@ -1,12 +1,13 @@
 from datetime import date
+from itertools import product
 
 import pytest
 from pydantic import ValidationError
 
-from ai.errors import InputError, InvalidResponseError
-from ai.evaluation import calculate_report
-from ai.grading import arithmetic, normalize_answer, verify_answer
-from ai.models import (
+from src.errors import InputError, InvalidResponseError
+from src.evaluation import calculate_report
+from src.grading import arithmetic, normalize_answer, verify_answer
+from src.models import (
     CriterionJudgment,
     EvaluationJudgments,
     MultipleChoiceAnswer,
@@ -14,7 +15,7 @@ from ai.models import (
     StudyTimeRequest,
     TimeConcept,
 )
-from ai.study_time import estimate_study_time
+from src.study_time import estimate_study_time
 
 
 @pytest.mark.parametrize(("expression", "expected"), [("1/3 + 2/3", 1), ("2**3", 8), ("-5+2", -3)])
@@ -72,6 +73,36 @@ def test_weighted_v1(statuses, coverage, assessable, weighted, context):
     )
     assert result.coverage == coverage
     assert result.assessable_count == assessable and result.weighted_score == weighted
+
+
+@pytest.mark.parametrize(
+    "statuses", list(product(("explained", "partial", "omission", "error", "unverified"), repeat=2))
+)
+def test_all_25_status_combinations_preserved_from_legacy_runner(context, statuses):
+    weights = {"explained": 1, "partial": 0.5, "omission": 0, "error": 0, "unverified": 0}
+    concept = context.concepts[0]
+    result = calculate_report(
+        EvaluationJudgments(
+            items=[
+                CriterionJudgment(
+                    checklist_item_id=criterion.id,
+                    status=status,
+                    description="Calculation fixture",
+                    confidence="medium",
+                    evidence=concept.version.evidence,
+                    learner_quote="",
+                )
+                for criterion, status in zip(concept.version.checklist_items, statuses, strict=True)
+            ],
+            next_action="Review",
+        ),
+        concept,
+    )
+    count = sum(status != "unverified" for status in statuses)
+    score = sum(weights[status] for status in statuses)
+    assert result.coverage == (round(score / count, 4) if count else None)
+    assert result.weighted_score == score and result.assessable_count == count
+    assert all(item.concept_version_id == concept.version.id for item in result.items)
 
 
 def test_weighted_v1_rounds_four_places_and_counts_all_criteria(context):
@@ -140,7 +171,7 @@ def test_negative_progress_rejected(context):
 def test_weighted_v1_rounds_ratio_to_four_decimals(context):
     from uuid import uuid4
 
-    from ai.models import ConceptChecklistItem
+    from src.models import ConceptChecklistItem
 
     concept = context.concepts[0].model_copy(deep=True)
     concept.version.checklist_items.append(
@@ -188,7 +219,7 @@ def test_completed_concept_can_still_have_review_time(context):
 
 
 def test_confirmed_context_workload_includes_teachback_and_no_daily_time_input(context):
-    from ai.study_time import estimate_context_workload
+    from src.study_time import estimate_context_workload
 
     result = estimate_context_workload(
         context, exam_date=date(2026, 11, 10), today=date(2026, 11, 3)
@@ -200,7 +231,7 @@ def test_confirmed_context_workload_includes_teachback_and_no_daily_time_input(c
 
 
 def test_workload_difficulty_importance_and_progress(context):
-    from ai.study_time import estimate_context_workload
+    from src.study_time import estimate_context_workload
 
     version = context.concepts[0].version
     progress = TimeConcept(

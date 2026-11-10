@@ -5,9 +5,11 @@ from uuid import UUID
 
 import httpx
 
-from ai import evaluation, material, questions, teachback
-from ai.document_parse import UpstageDocumentParser
-from ai.models import (
+from api.router import ModelRouter
+from api.upstage import UpstageDocumentParser
+from src import analysis as concept_analysis
+from src import evaluation, material, questions
+from src.models import (
     AnalysisPart,
     AnalyzeRequest,
     CriterionJudgment,
@@ -19,10 +21,7 @@ from ai.models import (
     QuestionBatch,
     QuestionRequest,
     SourceEvidence,
-    StudentQuestion,
-    TeachbackRequest,
 )
-from ai.router import ModelRouter
 
 
 def test_recognized_chunks_reused_by_all_learning_functions(
@@ -65,7 +64,7 @@ def test_recognized_chunks_reused_by_all_learning_functions(
         AnalysisPart(units=[DraftUnit(title="Unit", concepts=[draft])]),
         AnalysisPart(units=[]),
     ]
-    analysis = material.analyze(AnalyzeRequest(chunks=chunks), router)
+    analysis = concept_analysis.analyze(AnalyzeRequest(chunks=chunks), router)
     assert analysis.state == "draft"
     assert analysis.units[0].concepts[0].evidence[0].chunk_id == ids[0]
     # Simulate the existing backend confirmation/versioning contract with persisted fixture IDs.
@@ -87,19 +86,6 @@ def test_recognized_chunks_reused_by_all_learning_functions(
         router,
     )
     assert generated.items[0].question.evidence == [evidence]
-    llm.generate_json.return_value = StudentQuestion(question="어떤 뜻인지 더 설명해 줄래요?")
-    reply = teachback.respond(
-        TeachbackRequest(
-            context=context,
-            concept_version_id=version.id,
-            explanation_language="ko",
-            student_persona="curious_beginner",
-            content="habits",
-            question_count=0,
-        ),
-        router,
-    )
-    assert reply.question_count == 1
     llm.generate_json.return_value = EvaluationJudgments(
         items=[
             CriterionJudgment(

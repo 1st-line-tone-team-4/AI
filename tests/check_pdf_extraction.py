@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pymupdf
 
-from ai.errors import AIError
-from ai.pdf import extract_pdf_with_quality
+from src.errors import AIError
+from src.pdf import extract_pdf_with_quality
 
 
 def character_error_rate(expected: str, actual: str) -> float:
@@ -26,7 +26,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pdf", nargs="?", type=Path, default=Path("tests/fixtures/local_ocr.pdf"))
     parser.add_argument("--page", type=int, help="Compare just this 1-based source page")
-    parser.add_argument("--report", type=Path, default=Path("reports/local-ocr-comparison.json"))
+    parser.add_argument(
+        "--report", type=Path, default=Path(".cache/diagnostics/local-ocr-comparison.json")
+    )
     args = parser.parse_args()
     with pymupdf.open(args.pdf) as source:
         numbers = [args.page] if args.page else list(range(1, len(source) + 1))

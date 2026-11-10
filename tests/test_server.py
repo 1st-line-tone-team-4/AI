@@ -1,5 +1,6 @@
 """Real loopback HTTP test; child process explicitly disables all provider calls."""
 
+import json
 import os
 import socket
 import subprocess
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-from ai.models import MultipleChoiceAnswer
+from src.models import MultipleChoiceAnswer
 
 
 def test_running_uvicorn_server(tmp_path, context, pdf_data, stored):
@@ -21,14 +22,17 @@ def test_running_uvicorn_server(tmp_path, context, pdf_data, stored):
         HOST="127.0.0.1",
         PORT=str(port),
         AI_LIVE_ENABLED="false",
-        AI_FREE_TIER_CONFIRMED="false",
+        AI_ALLOW_UNLISTED_MODELS="true",
         AI_SERVER_API_KEY="loopback-test-key",
         UPSTAGE_API_KEY="",
+        AI_ENV="development",
+        AI_RECORD_IO="true",
+        AI_RECORDING_ROOT=str(tmp_path),
     )
     log_path = tmp_path / "server.log"
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
-            [sys.executable, "-m", "ai"],
+            [sys.executable, "-m", "api"],
             cwd=Path(__file__).resolve().parents[1],
             env=env,
             stdout=log,
@@ -81,19 +85,28 @@ def test_running_uvicorn_server(tmp_path, context, pdf_data, stored):
                 )
                 assert result.status_code == 200 and result.json()["is_correct"]
                 blocked = client.post(
-                    "/internal/teachback/respond",
+                    "/internal/evaluations/generate",
                     headers={**headers, "X-AI-Key": "fake-request-key"},
                     json={
                         "context": context.model_dump(mode="json"),
                         "concept_version_id": str(context.concepts[0].version.id),
                         "model_id": "gemini:fixture-model",
                         "explanation_language": "en",
-                        "student_persona": "curious_beginner",
-                        "content": "The simple present describes habits.",
-                        "question_count": 0,
+                        "history": [
+                            {"role": "user", "content": "The simple present describes habits."}
+                        ],
                     },
                 )
-                assert blocked.status_code == 422
+                assert blocked.status_code == 503
+                assert blocked.json()["error"]["code"] == "CONFIGURATION_ERROR"
+                for _ in range(50):
+                    outputs = list((tmp_path / "output").glob("questions_grade_output.json"))
+                    if outputs:
+                        break
+                    time.sleep(0.02)
+                assert len(outputs) == 1
+                assert json.loads(outputs[0].read_text(encoding="utf-8"))["is_correct"]
+                assert (tmp_path / "input/questions_grade_input.json").is_file()
         finally:
             process.terminate()
             try:

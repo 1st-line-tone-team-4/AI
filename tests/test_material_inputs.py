@@ -5,9 +5,9 @@ import httpx
 import pymupdf
 import pytest
 
-from ai.document_parse import UpstageDocumentParser
-from ai.errors import InputError
-from ai.material import bind_source_chunks, extract_material
+from api.upstage import UpstageDocumentParser
+from src.errors import InputError
+from src.material import bind_source_chunks, extract_material
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "cp949"])

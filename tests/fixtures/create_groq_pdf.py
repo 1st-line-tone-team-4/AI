@@ -1,4 +1,7 @@
-"""Create fictional Korean/English lesson pages for a bounded Groq OCR test."""
+"""Create fictional Korean/English lesson pages for offline recognition tests.
+
+The fixture filename is historical; no provider API is called.
+"""
 
 from pathlib import Path
 

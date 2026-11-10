@@ -1,13 +1,12 @@
-from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from ai.api import create_app
-from ai.config import Settings
-from ai.errors import (
+from api.app import create_app
+from api.config import Settings
+from src.errors import (
     ConfigurationError,
     InvalidResponseError,
     ModelAccessError,
@@ -15,8 +14,7 @@ from ai.errors import (
     RateLimitError,
     RequestTimeoutError,
 )
-from ai.models import MultipleChoiceAnswer, StudentQuestion, TeachbackRequest
-from ai.router import ModelRouter
+from src.models import EvaluationRequest, Message, MultipleChoiceAnswer
 
 HEADERS = {"X-AI-API-Key": "local-test-server-key"}
 MODEL_ID = "gemini:fixture-model"
@@ -31,20 +29,18 @@ def client(settings, parse_payload):
         with pymupdf.open(stream=data, filetype="pdf") as pdf:
             return parse_payload(len(pdf))
 
-    with patch("ai.document_parse.UpstageDocumentParser._request", side_effect=recognize):
+    with patch("api.upstage.UpstageDocumentParser._request", side_effect=recognize):
         with TestClient(create_app(settings)) as client:
             yield client
 
 
-def teachback_payload(context):
-    return TeachbackRequest(
+def evaluation_payload(context):
+    return EvaluationRequest(
         context=context,
         concept_version_id=context.concepts[0].version.id,
         model_id=MODEL_ID,
         explanation_language="ko",
-        student_persona="curious_beginner",
-        content="The simple present describes habits.",
-        question_count=0,
+        history=[Message(role="user", content="The simple present describes habits.")],
     ).model_dump(mode="json")
 
 
@@ -55,11 +51,22 @@ def test_health_docs_internal_only_and_no_backend_duplication(client):
     assert all(path == "/health" or path.startswith("/internal/") for path in schema["paths"])
     assert "/study-plan" not in schema["paths"] and "/questions/recommend" not in schema["paths"]
     assert schema["components"]["securitySchemes"]["ProviderBYOK"]["name"] == "X-AI-Key"
-    assert "/internal/explanations/generate" not in schema["paths"]
-    assert "/internal/teachback/respond" in schema["paths"]
+    assert "/internal/explanations/generate" in schema["paths"]
+    assert "/internal/teachback/sessions" in schema["paths"]
+    assert "/internal/teachback/respond" not in schema["paths"]
     assert (
-        client.post("/internal/explanations/generate", headers=HEADERS, json={}).status_code == 404
+        client.post("/internal/explanations/generate", headers=HEADERS, json={}).status_code == 422
     )
+
+
+def test_internal_openapi_matches_before_refactor(client):
+    import json
+    from pathlib import Path
+
+    baseline = json.loads(
+        (Path(__file__).parent / "fixtures/internal_openapi.json").read_text(encoding="utf-8")
+    )
+    assert client.get("/openapi.json").json() == baseline
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-AI-API-Key": "wrong"}])
@@ -67,8 +74,18 @@ def test_all_function_routes_require_server_auth(client, headers):
     schema = client.get("/openapi.json").json()
     for path in schema["paths"]:
         if path != "/health":
-            method = client.get if path == "/internal/models" else client.post
-            assert method(path, headers=headers).status_code == 401
+            method = (
+                client.get
+                if path == "/internal/models" or path.endswith("{session_id}")
+                else client.post
+            )
+            assert (
+                method(
+                    path.replace("{session_id}", "00000001-1111-4111-8111-111111111111"),
+                    headers=headers,
+                ).status_code
+                == 401
+            )
 
 
 def test_no_server_key_fails_closed():
@@ -107,7 +124,7 @@ def test_pdf_errors_and_size_bound(client):
     )
     assert (
         client.post(
-            "/internal/teachback/respond", content=b"x" * (2 * 1024 * 1024 + 1), headers=HEADERS
+            "/internal/evaluations/generate", content=b"x" * (2 * 1024 * 1024 + 1), headers=HEADERS
         ).status_code
         == 413
     )
@@ -115,7 +132,7 @@ def test_pdf_errors_and_size_bound(client):
 
 def test_validation_does_not_echo_private_inputs(client):
     result = client.post(
-        "/internal/teachback/respond",
+        "/internal/evaluations/generate",
         headers=HEADERS,
         json={"concept_version_id": "private-secret-invalid-uuid"},
     )
@@ -123,35 +140,76 @@ def test_validation_does_not_echo_private_inputs(client):
 
 
 def test_unknown_model_rejected_before_provider(client, context):
-    body = teachback_payload(context)
+    body = evaluation_payload(context)
     body["model_id"] = "https://attacker.invalid/arbitrary"
-    with patch("ai.router.GeminiClient", side_effect=AssertionError("No provider call")):
-        result = client.post("/internal/teachback/respond", headers=HEADERS, json=body)
+    with patch("api.router.SDKClient", side_effect=AssertionError("No provider call")):
+        result = client.post("/internal/evaluations/generate", headers=HEADERS, json=body)
     assert result.status_code == 422 and result.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
 
 
 def test_http_provider_key_never_falls_back_to_server_key(client, context):
     result = client.post(
-        "/internal/teachback/respond", headers=HEADERS, json=teachback_payload(context)
+        "/internal/evaluations/generate", headers=HEADERS, json=evaluation_payload(context)
     )
     assert result.status_code == 422
-    with patch("ai.router.GeminiClient") as factory:
+    with patch("api.router.SDKClient") as factory:
         key = "request-only-private-key"
         factory.return_value.generate_json.side_effect = InvalidResponseError(
             "Rejected fixture output"
         )
         result = client.post(
-            "/internal/teachback/respond",
+            "/internal/evaluations/generate",
             headers={**HEADERS, "X-AI-Key": key},
-            json=teachback_payload(context),
+            json=evaluation_payload(context),
         )
-        assert factory.call_args.args[0].gemini_api_key.get_secret_value() == key
+        assert factory.call_args.args[1] == key
         factory.return_value.close.assert_called_once()
         assert key not in result.text
 
 
+def test_server_text_key_requires_explicit_opt_in(settings):
+    from api.router import request_router
+
+    settings = settings.model_copy(update={"gemini_api_key": SecretStr("server-only-key")})
+    with patch("api.router.SDKClient") as factory:
+        with pytest.raises(ModelAccessError):
+            with request_router(settings, MODEL_ID, None):
+                raise AssertionError("BYOK default must reject missing request key")
+        factory.assert_not_called()
+        with request_router(
+            settings.model_copy(update={"use_server_text_key": True}), MODEL_ID, None
+        ):
+            assert factory.call_args.args[1] == "server-only-key"
+        factory.return_value.close.assert_called_once()
+
+
+def test_unlisted_gemini_model_uses_request_key_and_preserves_contract(settings, context):
+    config = settings.model_copy(
+        update={"server_api_key": SecretStr(HEADERS["X-AI-API-Key"]), "allow_unlisted_models": True}
+    )
+    with patch("api.router.SDKClient") as factory:
+        factory.return_value.generate_json.side_effect = InvalidResponseError("Fixture response")
+        with TestClient(create_app(config)) as client:
+            body = evaluation_payload(context)
+            body["model_id"] = "gemini:test-unlisted-model"
+            assert client.post("/internal/evaluations/generate", json=body).status_code == 401
+            factory.assert_not_called()
+            result = client.post(
+                "/internal/evaluations/generate",
+                json=body,
+                headers={**HEADERS, "X-AI-Key": "request-model-key"},
+            )
+            assert result.status_code == 502 and result.json()["error"]["code"] == "INVALID_OUTPUT"
+            assert factory.call_args.args[1] == "request-model-key"
+            assert (
+                factory.return_value.generate_json.call_args.kwargs["model"]
+                == "test-unlisted-model"
+            )
+        factory.return_value.close.assert_called_once()
+
+
 def test_deterministic_grading_needs_no_provider_key(client, context, stored):
-    with patch("ai.router.GeminiClient", side_effect=AssertionError("No provider call")):
+    with patch("api.router.SDKClient", side_effect=AssertionError("No provider call")):
         result = client.post(
             "/internal/questions/grade",
             headers=HEADERS,
@@ -177,39 +235,18 @@ def test_deterministic_grading_needs_no_provider_key(client, context, stored):
     ],
 )
 def test_provider_errors_map_to_http(client, context, error, status, code):
-    with patch("ai.router.GeminiClient") as factory:
+    with patch("api.router.SDKClient") as factory:
         factory.return_value.generate_json.side_effect = error
         result = client.post(
-            "/internal/teachback/respond",
+            "/internal/evaluations/generate",
             headers={**HEADERS, "X-AI-Key": "test-key"},
-            json=teachback_payload(context),
+            json=evaluation_payload(context),
         )
     assert result.status_code == status and result.json()["error"]["code"] == code
 
 
-def test_teachback_endpoint_actual_postprocessing(client, settings, context):
-    result = StudentQuestion(question="Can you give another example?")
-    transport = MagicMock()
-    transport.generate_json.return_value = result
-    router = ModelRouter(settings, {"gemini": transport})
-
-    @contextmanager
-    def bound(settings, model_id, key):
-        yield router
-
-    with patch("ai.api.request_router", bound):
-        response = client.post(
-            "/internal/teachback/respond",
-            headers={**HEADERS, "X-AI-Key": "test-key"},
-            json=teachback_payload(context),
-        )
-    assert response.status_code == 200
-    assert response.json()["question"] == result.question
-    assert response.json()["question_count"] == 1
-
-
 def test_validate_key_never_generates_and_reports_unavailable(client):
-    with patch("ai.router.GeminiClient") as factory:
+    with patch("api.router.SDKClient") as factory:
         factory.return_value.check_model_access.side_effect = ProviderError("Unavailable")
         result = client.post(
             "/internal/models/validate-key",
@@ -222,7 +259,7 @@ def test_validate_key_never_generates_and_reports_unavailable(client):
 
 
 def test_parse_requires_no_llm_provider_key(client, pdf_data):
-    with patch("ai.router.GeminiClient") as provider:
+    with patch("api.router.SDKClient") as provider:
         result = client.post(
             "/internal/materials/extract",
             content=pdf_data,

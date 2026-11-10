@@ -8,7 +8,6 @@ venv/
 # Secrets
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 *.p12
@@ -36,6 +35,16 @@ dist/
 
 # Local reports / OCR cache
 reports/
+input/
+output/
+test_data/
+# Local examples derived from private learning materials.
+examples/
+/analyze_example.json
+/generate_example.json
+/grade_example.json
+/estimate_example.json
+/keywords_example.json
 .tessdata/
 .cache/
 *.log
@@ -53,6 +62,7 @@ tests/fixtures/private/
 tests/fixtures/*
 !tests/fixtures/*.py
 !tests/fixtures/backend_context.json
+!tests/fixtures/internal_openapi.json
 !tests/fixtures/english_grammar.pdf
 !tests/fixtures/groq_korean.pdf
 !tests/fixtures/local_ocr.pdf

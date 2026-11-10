@@ -5,8 +5,8 @@ import httpx
 import pymupdf
 import pytest
 
-from ai.document_parse import UpstageDocumentParser, normalize_response
-from ai.errors import (
+from api.upstage import UpstageDocumentParser, normalize_response
+from src.errors import (
     ConfigurationError,
     DocumentProcessingStateError,
     InputError,

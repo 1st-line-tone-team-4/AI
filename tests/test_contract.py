@@ -6,12 +6,13 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 from pydantic import ValidationError
 
-from ai import evaluation, questions
-from ai.context import validate_context
-from ai.errors import InputError
-from ai.models import (
+from src import evaluation, questions
+from src.context import validate_context
+from src.errors import InputError
+from src.models import (
     CriterionJudgment,
     EvaluationJudgments,
+    ExplanationContent,
     MultipleChoiceAnswer,
     QuestionResult,
     StudyContext,
@@ -20,6 +21,8 @@ from ai.models import (
 
 @pytest.fixture(scope="module")
 def contract():
+    if not (Path(__file__).resolve().parents[1] / "swagger-api-final.yaml").is_file():
+        pytest.skip("Original swagger-api-final.yaml is absent; public YAML contract not verified.")
     return yaml.safe_load(
         (Path(__file__).resolve().parents[1] / "swagger-api-final.yaml").read_text(encoding="utf-8")
     )
@@ -51,6 +54,16 @@ def test_public_question_and_question_result_match_yaml(contract, stored, contex
         evidence=stored.question.evidence,
     )
     validate_contract(contract, "QuestionResult", result)
+
+
+def test_explanation_content_matches_public_yaml(contract, context):
+    ref = context.concepts[0].version.evidence[0]
+    result = ExplanationContent(
+        title="Source explanation",
+        explanation_markdown=f"Habits. [근거: {ref.chunk_id}]",
+        evidence=[ref],
+    )
+    validate_contract(contract, "LearningExplanationContent", result)
 
 
 def test_report_projection_matches_yaml_without_generating_db_ids(contract, context):

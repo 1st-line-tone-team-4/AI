@@ -4,8 +4,8 @@ from uuid import UUID
 
 import pytest
 
-from ai.config import ModelTarget, Settings
-from ai.models import (
+from api.config import ModelTarget, Settings
+from src.models import (
     ConceptChecklistItem,
     ConceptVersion,
     ConfirmedConcept,
@@ -17,7 +17,7 @@ from ai.models import (
     StoredQuestion,
     StudyContext,
 )
-from ai.pdf import extract_pdf
+from src.pdf import extract_pdf
 
 
 def sample_id(number):
