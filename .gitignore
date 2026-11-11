@@ -45,6 +45,14 @@ examples/
 /grade_example.json
 /estimate_example.json
 /keywords_example.json
+/study_plan_example.json
+/grade_short_exact_example.json
+/grade_short_meaning_example.json
+/generate_mixed_5_example.json
+/generate_mixed_20_example.json
+/evaluation_partial_example.json
+/evaluation_error_example.json
+/evaluation_compare_example.json
 .tessdata/
 .cache/
 *.log

@@ -49,8 +49,8 @@ def test_all_text_roles_use_one_default_model(tmp_path, monkeypatch):
     assert {settings.target_for(role).provider for role in Role} == {"gemini"}
 
 
-@pytest.mark.parametrize("count", [5, 20])
-def test_mixed_questions_sdk_schema_and_final_source_contract(context, count):
+@pytest.mark.parametrize("count,fail_at", [(5, None), (20, None), (20, 4)])
+def test_mixed_questions_sdk_schema_and_final_source_contract(context, count, fail_at):
     calls = []
     sequence = 0
 
@@ -58,6 +58,11 @@ def test_mixed_questions_sdk_schema_and_final_source_contract(context, count):
         nonlocal sequence
         body = json.loads(request.content)
         calls.append(body)
+        thinking = body["generationConfig"]["thinkingConfig"]
+        assert thinking.get("thinkingLevel", thinking.get("thinking_level")) == "LOW"
+        assert body["generationConfig"]["maxOutputTokens"] == 8192
+        if len(calls) == fail_at:
+            return httpx.Response(200, json=envelope({"items": []}, status="MAX_TOKENS"))
         schema = body["generationConfig"]["responseJsonSchema"]
         q_schema = schema["properties"]["items"]["items"]["properties"]["question"]
         level = q_schema["properties"]["difficulty"]["enum"][0]
@@ -109,6 +114,11 @@ def test_mixed_questions_sdk_schema_and_final_source_contract(context, count):
         difficulty_plan=levels,
     )
     try:
+        if fail_at:
+            with pytest.raises(InvalidResponseError, match="incomplete"):
+                questions.generate(request, router)
+            assert len(calls) == fail_at
+            return
         result = questions.generate(request, router)
     finally:
         client.close()
@@ -133,6 +143,47 @@ def test_mixed_requires_explicit_allocation(context):
             count=5,
             difficulty="mixed",
         )
+
+
+@pytest.mark.parametrize("role,model,low", [
+    ("question_generation", "gemini-3.7-flash", True),
+    ("question_generation", "gemini-3.8-flash", True),
+    ("evaluation", "gemini-3.7-flash", False),
+    ("material_analysis", "gemini-3.7-flash", False),
+    ("explanation", "gemini-3.7-flash", False),
+    ("question_tagging", "gemini-3.7-flash", False),
+    ("question_generation", "gemini-2.5-flash", False),
+])
+def test_question_thinking_is_limited_to_supported_models_and_role(role, model, low):
+    from src.models import Keywords
+
+    calls = []
+
+    def handler(request):
+        config = json.loads(request.content)["generationConfig"]
+        calls.append(config)
+        if low:
+            thinking = config["thinkingConfig"]
+            assert set(thinking) in ({"thinkingLevel"}, {"thinking_level"})
+            assert thinking.get("thinkingLevel", thinking.get("thinking_level")) == "LOW"
+        else:
+            assert "thinkingConfig" not in config
+        return httpx.Response(200, json=envelope({"keywords": ["grammar"]}))
+
+    settings = Settings(
+        default_model_id="gemini:test",
+        model_allowlist={
+            "gemini:test": ModelTarget(provider="gemini", model=model, available=True)
+        },
+    )
+    client = adapter(handler)
+    try:
+        assert ModelRouter(settings, {"gemini": client}).generate_json(
+            role, prompt="Synthetic input", schema=Keywords,
+        ).keywords == ["grammar"]
+    finally:
+        client.close()
+    assert len(calls) == 1
 
 
 def test_explanation_indices_do_not_coerce_boolean():
@@ -452,6 +503,64 @@ def test_analysis_and_semantic_grading_official_sdk(context, stored):
     finally:
         client.close()
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", ["correct", "incorrect", "unverified", "foreign_evidence"])
+def test_semantic_grading_wire_preserves_verdict_and_real_evidence(context, stored, status):
+    from jsonschema import Draft202012Validator
+
+    from src import grading
+    from src.models import AnswerJudgment, GradeRequest, ShortAnswer
+
+    original_schema = AnswerJudgment.model_json_schema()
+    short = stored.model_copy(deep=True)
+    short.question.question_type = "short_answer"
+    short.question.options = []
+    short.correct_answer = ShortAnswer(type="short_answer", text="habits")
+    data = {
+        "status": "correct" if status == "foreign_evidence" else status,
+        "feedback": "Grounded judgment.",
+        "evidence": [e.model_dump(mode="json") for e in short.question.evidence],
+    }
+    if status == "foreign_evidence":
+        data["evidence"][0]["page_number"] += 1
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        wire = body["generationConfig"]["responseJsonSchema"]
+        assert "maxItems" not in wire["properties"]["evidence"]
+        assert wire["properties"]["evidence"]["type"] == "array"
+        assert wire["additionalProperties"] is False
+        assert set(wire["required"]) == {"status", "feedback", "evidence"}
+        Draft202012Validator(wire).validate(data)
+        excess = {**data, "evidence": data["evidence"] * 201}
+        Draft202012Validator(wire).validate(excess)
+        with pytest.raises(ValidationError):
+            grading._GeminiAnswerJudgment.model_validate(excess)
+        return httpx.Response(200, json=envelope(data))
+
+    request = GradeRequest(
+        context=context, stored_question=short,
+        answer=ShortAnswer(type="short_answer", text="regular habitual actions"),
+    )
+    client = adapter(handler)
+    try:
+        router = ModelRouter(gemini_settings(), {"gemini": client})
+        if status in ("unverified", "foreign_evidence"):
+            with pytest.raises(InvalidResponseError):
+                grading.grade(request, router)
+        else:
+            result = grading.grade(request, router)
+            assert result.is_correct is (status == "correct")
+            assert result.evidence == short.question.evidence
+            assert result.correct_answer == short.correct_answer
+            assert result.explanation == short.explanation
+    finally:
+        client.close()
+    assert len(calls) == 1
+    assert AnswerJudgment.model_json_schema() == original_schema
 
 
 def test_detailed_all_five_statuses_official_sdk(context):

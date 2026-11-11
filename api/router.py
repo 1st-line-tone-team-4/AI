@@ -50,6 +50,12 @@ class ModelRouter:
             kwargs["images"] = images
         if target.provider == "gemini":
             diagnostic_event(self.settings, "feature_preflight_passed")
+            if (
+                Role(role) == Role.QUESTION_GENERATION
+                and target.model in {"gemini-3.7-flash", "gemini-3.8-flash"}
+                and isinstance(client, SDKClient)
+            ):
+                return client.generate_json(**kwargs, thinking_level="low")
         return client.generate_json(**kwargs)
 
 

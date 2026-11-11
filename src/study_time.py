@@ -1,5 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 from math import ceil
+from typing import Literal
+from uuid import UUID
 
 from pydantic import Field
 
@@ -30,6 +32,144 @@ class WorkloadEstimate(Model):
     recommended_daily_concepts: int
     time_estimate: StudyTimeEstimate
     assumptions: list[str]
+
+
+class PlanTask(Model):
+    concept_id: UUID
+    concept_version_id: UUID
+    name: str
+    activity: Literal["learn", "practice", "teachback", "review"]
+    count: int = Field(ge=1)
+    estimated_minutes: int = Field(ge=1)
+    source_pages: list[int]
+    priority: float
+
+
+class PlanDay(Model):
+    date: date
+    tasks: list[PlanTask]
+    estimated_minutes: int = Field(ge=0)
+
+
+class StudyPlan(Model):
+    today: date
+    exam_date: date
+    total_pages: int
+    concept_count: int
+    urgent: bool
+    days: list[PlanDay]
+    today_tasks: list[PlanTask]
+    total_minutes: int
+    assumptions: list[str]
+
+
+def generate_plan(request: WorkloadRequest) -> StudyPlan:
+    remaining = (request.exam_date - request.today).days
+    if remaining < 0:
+        raise InputError("Exam date has passed; choose today or a future date.")
+    if remaining > 366:
+        raise InputError("Study plans support up to 366 days before the exam.")
+    estimate = estimate_workload(request)
+    progress = _context_progress(request.context, request.progress)
+    progress_by_id = {p.concept_version_id: p for p in progress}
+    concepts = {c.version.id: c for c in request.context.concepts}
+    count = max(1, remaining)
+    days = [
+        PlanDay(date=request.today + timedelta(days=i), tasks=[], estimated_minutes=0)
+        for i in range(count)
+    ]
+    primary, reviews = [], []
+    for timing in estimate.time_estimate.concepts:
+        concept = concepts[timing.concept_version_id]
+        state = progress_by_id[timing.concept_version_id]
+        base = dict(
+            concept_id=concept.concept_id,
+            concept_version_id=concept.version.id,
+            name=concept.version.name,
+            priority=timing.priority,
+            source_pages=sorted({e.page_number for e in concept.version.evidence}),
+        )
+        for activity, units, minutes in (
+            ("learn", state.remaining_criteria, timing.learning_minutes),
+            ("practice", state.remaining_questions, timing.question_minutes),
+            ("teachback", state.teachback_sessions, timing.teachback_minutes),
+            ("review", state.review_cycles, timing.review_minutes),
+        ):
+            if not units or not minutes:
+                continue
+            quotient, extra = divmod(minutes, units)
+            for index in range(units):
+                task = PlanTask(
+                    **base,
+                    activity=activity,
+                    count=(
+                        state.remaining_criteria
+                        if state.review_criteria is None
+                        else state.review_criteria
+                    )
+                    if activity == "review"
+                    else 1,
+                    estimated_minutes=quotient + (index < extra),
+                )
+                (reviews if activity == "review" else primary).append(task)
+
+    def add(day_index, task):
+        day = days[day_index]
+        existing = next(
+            (
+                t
+                for t in day.tasks
+                if t.concept_version_id == task.concept_version_id and t.activity == task.activity
+            ),
+            None,
+        )
+        if existing:
+            existing.count += task.count
+            existing.estimated_minutes += task.estimated_minutes
+        else:
+            day.tasks.append(task.model_copy(deep=True))
+        day.estimated_minutes += task.estimated_minutes
+
+    # Reserve the last fifth for review when possible; no daily-time input is required.
+    review_days = max(1, count // 5) if reviews and count >= 3 else 0
+    primary_days = max(1, count - review_days) if primary else 0
+    primary_total = sum(t.estimated_minutes for t in primary)
+    elapsed, last_day = 0, {}
+    for task in primary:
+        index = min(primary_days - 1, elapsed * primary_days // primary_total)
+        add(index, task)
+        last_day[task.concept_version_id] = index
+        elapsed += task.estimated_minutes
+    for version_id in dict.fromkeys(t.concept_version_id for t in reviews):
+        tasks = [t for t in reviews if t.concept_version_id == version_id]
+        earliest = min(count - 1, max(primary_days, last_day.get(version_id, -1) + 1))
+        available = count - earliest
+        for index, task in enumerate(tasks):
+            start = earliest + index * available // len(tasks)
+            stop = min(count, max(start + 1, earliest + (index + 1) * available // len(tasks)))
+            slot = min(range(start, stop), key=lambda i: (days[i].estimated_minutes, i))
+            add(slot, task)
+    total = sum(d.estimated_minutes for d in days)
+    if total != estimate.time_estimate.total_minutes:
+        raise InputError("Plan workload does not match the time estimate.")
+    return StudyPlan(
+        today=request.today,
+        exam_date=request.exam_date,
+        total_pages=request.total_pages,
+        concept_count=estimate.concept_count,
+        urgent=remaining <= 3,
+        days=days,
+        today_tasks=days[0].tasks,
+        total_minutes=total,
+        assumptions=[
+            "확정된 개념과 입력 진도만 배치하며 DB 일정·사용자 기록은 저장하지 않습니다.",
+            "취약도·미학습 여부·중요도 순으로 학습→문제 풀이→Teach-back을 배치합니다.",
+            "가능하면 마지막 약 20% 날짜를 복습에 사용하며 시험일 전날까지 배치합니다.",
+            "시험 당일은 오늘에 압축하고 임박 시 같은 날 여러 활동이 배정될 수 있습니다.",
+            "페이지는 개념 근거 위치이며 전체 페이지의 모든 내용 학습을 보장하지 않습니다.",
+            "시간은 기존 추정 기준을 사용하며 실제 학습 속도·완료를 보장하지 않습니다.",
+        ],
+    )
 
 
 def estimate_workload(request: WorkloadRequest) -> WorkloadEstimate:
@@ -125,9 +265,23 @@ def estimate_context_workload(
     progress: list[TimeConcept] | None = None,
 ) -> StudyTimeEstimate:
     """Use confirmed extracted concepts; backend may supply actual remaining work."""
+    supplied = progress is not None
+    progress = _context_progress(context, progress)
+    result = estimate_study_time(
+        StudyTimeRequest(exam_date=exam_date, today=today, concepts=progress)
+    )
+    if not supplied:
+        result.assumptions.append(
+            "Without progress: all confirmed criteria unlearned, 2 questions, 1 teach-back, "
+            "1 review per concept; medium difficulty and neutral importance."
+        )
+    return result
+
+
+def _context_progress(context, progress):
     by_id = {c.version.id: c for c in context.concepts}
     if progress is not None:
-        if set(by_id) != {p.concept_version_id for p in progress}:
+        if len(progress) != len(by_id) or set(by_id) != {p.concept_version_id for p in progress}:
             raise InputError("Progress must cover exactly the confirmed versions in context.")
         if any(
             p.remaining_criteria > len(by_id[p.concept_version_id].version.checklist_items)
@@ -146,11 +300,4 @@ def estimate_context_workload(
             )
             for c in context.concepts
         ]
-    result = estimate_study_time(
-        StudyTimeRequest(exam_date=exam_date, today=today, concepts=progress)
-    )
-    result.assumptions.append(
-        "Without progress: all confirmed criteria unlearned, 2 questions, 1 teach-back, 1 review "
-        "per concept; medium difficulty and neutral importance unless backend overrides."
-    )
-    return result
+    return progress

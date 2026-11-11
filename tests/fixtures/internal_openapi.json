@@ -277,6 +277,49 @@
         ]
       }
     },
+    "/internal/study-plan/generate": {
+      "post": {
+        "summary": "Study Plan",
+        "operationId": "study_plan_internal_study_plan_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyPlan"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ServerKey": []
+          }
+        ]
+      }
+    },
     "/internal/evaluations/detailed": {
       "post": {
         "summary": "Detailed Evaluation",
@@ -377,7 +420,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/QuestionRequest"
+                "$ref": "#/components/schemas/QuestionGenerationRequest"
               }
             }
           },
@@ -2162,6 +2205,97 @@
         ],
         "title": "ParsedPage"
       },
+      "PlanDay": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/PlanTask"
+            },
+            "type": "array",
+            "title": "Tasks"
+          },
+          "estimated_minutes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Estimated Minutes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "tasks",
+          "estimated_minutes"
+        ],
+        "title": "PlanDay"
+      },
+      "PlanTask": {
+        "properties": {
+          "concept_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Concept Id"
+          },
+          "concept_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Concept Version Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "activity": {
+            "type": "string",
+            "enum": [
+              "learn",
+              "practice",
+              "teachback",
+              "review"
+            ],
+            "title": "Activity"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Count"
+          },
+          "estimated_minutes": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Estimated Minutes"
+          },
+          "source_pages": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Source Pages"
+          },
+          "priority": {
+            "type": "number",
+            "title": "Priority"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "concept_id",
+          "concept_version_id",
+          "name",
+          "activity",
+          "count",
+          "estimated_minutes",
+          "source_pages",
+          "priority"
+        ],
+        "title": "PlanTask"
+      },
       "PublicQuestionDraft": {
         "properties": {
           "question_type": {
@@ -2238,7 +2372,7 @@
         ],
         "title": "PublicQuestionDraft"
       },
-      "QuestionRequest": {
+      "QuestionGenerationRequest": {
         "properties": {
           "model_id": {
             "anyOf": [
@@ -2274,7 +2408,7 @@
           "count": {
             "type": "integer",
             "maximum": 20.0,
-            "minimum": 1.0,
+            "minimum": 5.0,
             "title": "Count"
           },
           "difficulty": {
@@ -2340,7 +2474,8 @@
           "count",
           "difficulty"
         ],
-        "title": "QuestionRequest"
+        "title": "QuestionGenerationRequest",
+        "description": "Public internal HTTP input; smaller batches remain an implementation detail."
       },
       "QuestionResult": {
         "properties": {
@@ -2656,6 +2791,71 @@
           "chunks"
         ],
         "title": "StudyContext"
+      },
+      "StudyPlan": {
+        "properties": {
+          "today": {
+            "type": "string",
+            "format": "date",
+            "title": "Today"
+          },
+          "exam_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Exam Date"
+          },
+          "total_pages": {
+            "type": "integer",
+            "title": "Total Pages"
+          },
+          "concept_count": {
+            "type": "integer",
+            "title": "Concept Count"
+          },
+          "urgent": {
+            "type": "boolean",
+            "title": "Urgent"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/PlanDay"
+            },
+            "type": "array",
+            "title": "Days"
+          },
+          "today_tasks": {
+            "items": {
+              "$ref": "#/components/schemas/PlanTask"
+            },
+            "type": "array",
+            "title": "Today Tasks"
+          },
+          "total_minutes": {
+            "type": "integer",
+            "title": "Total Minutes"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Assumptions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "today",
+          "exam_date",
+          "total_pages",
+          "concept_count",
+          "urgent",
+          "days",
+          "today_tasks",
+          "total_minutes",
+          "assumptions"
+        ],
+        "title": "StudyPlan"
       },
       "StudyTimeEstimate": {
         "properties": {

@@ -266,6 +266,8 @@ def diagnostic_event(settings, stage, *, exc=None, response=None, **counts):
                 and type(v) is int
             }
         )
+        if counts.get("thinking_level") in {"LOW", "MEDIUM", "HIGH"}:
+            row["thinking_level"] = counts["thinking_level"]
         if exc is not None:
             row.update(error_diagnostics(exc))
         if response is not None:
@@ -473,7 +475,8 @@ class SDKClient:
             diagnostic_event(self.settings, "model_access_request_completed")
 
     def generate_json(
-        self, *, model: str, prompt: str, schema: type[T], images: list[ImageInput] | None = None
+        self, *, model: str, prompt: str, schema: type[T], images: list[ImageInput] | None = None,
+        thinking_level: str | None = None,
     ) -> T:
         with diagnostic_scope(
             self.settings,
@@ -482,9 +485,12 @@ class SDKClient:
             secrets=self._diagnostic_secrets,
             credential_source="sdk_argument",
         ):
-            return self._generate_json(model=model, prompt=prompt, schema=schema, images=images)
+            return self._generate_json(
+                model=model, prompt=prompt, schema=schema, images=images,
+                thinking_level=thinking_level,
+            )
 
-    def _generate_json(self, *, model, prompt, schema, images):
+    def _generate_json(self, *, model, prompt, schema, images, thinking_level=None):
         diagnostic_event(self.settings, "sdk_preparation_started")
         try:
             content = [types.Part.from_text(text=prompt)]
@@ -495,6 +501,10 @@ class SDKClient:
                 response_mime_type="application/json",
                 response_json_schema=compatible_schema(schema.model_json_schema()),
                 max_output_tokens=self.settings.max_output_tokens,
+                thinking_config=(
+                    types.ThinkingConfig(thinking_level=thinking_level)
+                    if thinking_level is not None else None
+                ),
             )
         except Exception as exc:
             diagnostic_event(self.settings, "sdk_preparation_failed", exc=exc)
@@ -505,6 +515,10 @@ class SDKClient:
             prompt_characters=len(prompt),
             schema_characters=len(json.dumps(config.response_json_schema)),
             max_output_tokens=self.settings.max_output_tokens,
+            thinking_level=(
+                config.thinking_config.thinking_level.value
+                if config.thinking_config is not None else None
+            ),
         )
         try:
             response = self.client.models.generate_content(

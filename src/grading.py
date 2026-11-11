@@ -103,6 +103,21 @@ GRADING_PROMPT = """
 """
 
 
+class _GeminiAnswerJudgment(AnswerJudgment):
+    """Simpler wire bound; inherited Pydantic evidence limit is unchanged."""
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        schema = super().model_json_schema(*args, **kwargs)
+        evidence = schema["properties"]["evidence"]
+        limit = evidence.pop("maxItems")
+        evidence["description"] = (
+            f"Use only necessary source evidence; at most {limit} items. "
+            "The application enforces the original limit."
+        )
+        return schema
+
+
 def grade(request: GradeRequest, router: ModelRouter | None = None) -> QuestionResult:
     stored = request.stored_question
     concepts = validate_question(stored.question, request.context)
@@ -145,7 +160,11 @@ def grade(request: GradeRequest, router: ModelRouter | None = None) -> QuestionR
                     "submitted_answer": request.answer.model_dump(),
                 },
             ),
-            schema=AnswerJudgment,
+            schema=(
+                _GeminiAnswerJudgment
+                if router.settings.target_for("evaluation", request.model_id).provider == "gemini"
+                else AnswerJudgment
+            ),
         )
         validate_sources(
             judgment.evidence, allowed_chunks(request.context, concepts), generated=True

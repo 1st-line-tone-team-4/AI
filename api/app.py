@@ -57,7 +57,7 @@ from src.models import (
     GradeRequest,
     Keywords,
     ModelRequest,
-    QuestionRequest,
+    QuestionGenerationRequest,
     QuestionResult,
     TagRequest,
 )
@@ -314,6 +314,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return study_time.estimate_workload(request)
 
     @app.post(
+        "/internal/study-plan/generate",
+        response_model=study_time.StudyPlan,
+        dependencies=protected,
+    )
+    def study_plan(request: study_time.WorkloadRequest):
+        return study_time.generate_plan(request)
+
+    @app.post(
         "/internal/evaluations/detailed",
         response_model=DetailedEvaluationResult,
         dependencies=protected,
@@ -330,7 +338,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(
         "/internal/questions/generate", response_model=GeneratedQuestions, dependencies=protected
     )
-    def generate(request: QuestionRequest, key: Annotated[str | None, Depends(provider_header)]):
+    def generate(
+        request: QuestionGenerationRequest, key: Annotated[str | None, Depends(provider_header)]
+    ):
         return run(questions.generate, request, key)
 
     @app.post("/internal/questions/grade", response_model=QuestionResult, dependencies=protected)

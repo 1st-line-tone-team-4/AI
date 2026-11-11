@@ -299,6 +299,12 @@ class QuestionRequest(ModelRequest):
         return self
 
 
+class QuestionGenerationRequest(QuestionRequest):
+    """Public internal HTTP input; smaller batches remain an implementation detail."""
+
+    count: int = Field(ge=5, le=20)
+
+
 class GeneratedQuestions(QuestionBatch):
     verification: list[AnswerVerification]
 

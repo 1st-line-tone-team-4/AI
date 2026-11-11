@@ -28,6 +28,7 @@ FEATURE_NAMES = {
     "internal_evaluations_detailed": "evaluation_detailed",
     "internal_keywords_suggest": "keywords",
     "internal_study_time_estimate": "study_time",
+    "internal_study_plan_generate": "study_plan",
     "internal_teachback_sessions": "teachback_session_create",
     "internal_teachback_session_result": "teachback_session",
     "internal_teachback_session_evaluate": "teachback_evaluation",
@@ -342,6 +343,8 @@ class IORecordingMiddleware:
                     feature = "internal_evaluations_detailed"
                 elif path == "/internal/study-time/estimate":
                     feature = "internal_study_time_estimate"
+                elif path == "/internal/study-plan/generate":
+                    feature = "internal_study_plan_generate"
                 await record_exchange(
                     self.settings,
                     feature,

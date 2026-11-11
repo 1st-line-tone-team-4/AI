@@ -21,11 +21,18 @@ from src.models import (
 
 @pytest.fixture(scope="module")
 def contract():
-    if not (Path(__file__).resolve().parents[1] / "swagger-api-final.yaml").is_file():
-        pytest.skip("Original swagger-api-final.yaml is absent; public YAML contract not verified.")
-    return yaml.safe_load(
-        (Path(__file__).resolve().parents[1] / "swagger-api-final.yaml").read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parents[1]
+    path = next(
+        (
+            p
+            for p in (root / "swagger-api-final.yaml", root / "test_data/swagger-api-final.yaml")
+            if p.is_file()
+        ),
+        None,
     )
+    if path is None:
+        pytest.skip("Original swagger-api-final.yaml is absent; public YAML contract not verified.")
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def validate_contract(contract, name, instance):

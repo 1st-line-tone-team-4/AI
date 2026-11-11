@@ -6,7 +6,7 @@
 - 텍스트 AI: Google 공식 `google-genai` SDK와 Gemini Structured Outputs
 - 음성 Teach-back: Gemini Live, 한국어 AI 학생과 양방향 대화
 - Python 처리: 객관식·정확 일치 채점, 학습량·예상 시간 계산
-- 날짜별 학습 계획 생성은 아직 구현되지 않았습니다.
+- 날짜별 학습 계획: Python으로 진도·취약도에 따른 할 일 배치, DB 저장은 백엔드 담당
 
 ## 설치와 실행
 
@@ -72,6 +72,7 @@ Swagger의 **Authorize → ServerKey**에 `AI_SERVER_API_KEY`를 넣습니다. `
 | POST `/questions/grade` | 문제 1개 채점, 필요한 단답형만 의미 평가 |
 | POST `/keywords/suggest` | 문제의 키워드 1~5개 추출 |
 | POST `/study-time/estimate` | 남은 날짜에 따른 학습량·권장 시간 추정 |
+| POST `/study-plan/generate` | 날짜별 학습·문제 풀이·Teach-back·복습 및 오늘 할 일 |
 | POST `/evaluations/generate` | 체크리스트 기반 이해도 평가 |
 | POST `/evaluations/detailed` | 평가·발화 인용·교정·개선점·이전 결과 비교 |
 | POST `/teachback/sessions` | 음성 세션 생성 |
@@ -82,12 +83,15 @@ Swagger의 **Authorize → ServerKey**에 `AI_SERVER_API_KEY`를 넣습니다. `
 
 1. `extract` 출력 전체를 `analyze`에 그대로 전달하지 않습니다. 백엔드가 `chunk_drafts`에 자료·청크 UUID를 결합해 `SourceChunk`를 구성합니다. `src.material.bind_source_chunks`를 사용할 수 있습니다.
 2. `analyze`는 `draft`를 반환합니다. 사용자 확인 후 백엔드가 단원·개념·버전·체크리스트 UUID와 확정 시각을 저장하고, 원문 `chunks`를 포함한 `StudyContext`를 다음 기능에 전달합니다. UUID는 v4이며 근거·페이지·확정 버전 관계를 유지해야 합니다.
-3. 문제 생성 입력은 현재 1~20개를 허용합니다. 기획 범위는 5~20개이며 최소 5개 강제는 아직 반영되지 않았습니다. `difficulty="mixed"`이면 문항 수에 맞는 `difficulty_plan`이 필요합니다. 예: `["easy","medium","hard","medium","easy"]`.
+3. 문제 생성 HTTP 입력은 5~20개로 검증합니다. 내부 분할 생성·회귀 테스트용 `QuestionRequest`는 작은 배치를 허용합니다. `difficulty="mixed"`이면 문항 수에 맞는 `difficulty_plan`이 필요합니다. 예: `["easy","medium","hard","medium","easy"]`.
+   Gemini 3.7/3.8 Flash의 문제 생성에만 `thinking_level=low`를 적용해 추론의 출력 한도 소진을 줄입니다. 다른 기능·모델의 추론 설정은 유지합니다. 난이도별 분할·병합과 문항 수·유형·근거 검증은 유지하며, `MAX_TOKENS` 응답을 자르거나 재조립해 성공으로 처리하지 않습니다.
 4. 생성 결과의 `StoredQuestion`에는 정답·해설이 포함됩니다. 백엔드가 비공개로 저장하고 풀이 전에는 `public_question`으로 투영한 공개 문제만 전달합니다.
 5. 이해도 평가는 사용자 발화만 사용하며 확정 체크리스트·근거를 검증합니다. `weighted-v1` 점수는 Python으로 계산합니다. 이전 결과를 전달해야 비교가 생성됩니다.
 6. 시간 계산은 기준 시간과 입력 진도·취약도에 따른 추정이며 실제 학습 속도나 완료를 보장하지 않습니다. `assumptions`는 계산 기준 설명이고 화면 노출은 프론트엔드에서 결정합니다.
 
-DB·사용자 권한·영구 이력·비동기 Job·일정 저장은 AI 서버에서 구현하지 않습니다. 메인 백엔드 공개 API와 `/internal/*`는 별도 계약이며, 혼합 난이도·실시간 음성·상세 평가의 공개 연동 방식은 팀 협의가 필요합니다.
+계획 생성은 estimate와 같은 `context`, `total_pages`, `exam_date`, 선택 `today`·`progress`를 받습니다. 확정 개념의 실제 버전·근거 페이지를 유지하며 취약·미학습 개념을 먼저 배치합니다. 학습→문제 풀이→Teach-back 이후, 가능하면 마지막 약 20% 날짜에 복습을 배정하는 초기 규칙입니다. 시험 전날까지 배치하며 시험 당일은 오늘에 압축합니다. 과거 시험일·366일 초과 계획은 거절합니다. `days`, `today_tasks`, 날짜별·전체 예상 시간을 반환하며, 완료한 활동은 `progress`에서 남은 수를 0으로 전달합니다. 일정 변경·완료 이력은 저장하지 않습니다.
+
+DB·사용자 권한·영구 이력·비동기 Job·일정 저장은 AI 서버에서 구현하지 않습니다. 메인 백엔드 공개 API와 `/internal/*`는 별도 계약이며, 계획 생성·혼합 난이도·실시간 음성·상세 평가의 공개 연동 방식은 팀 협의가 필요합니다.
 
 ## 음성 테스트
 
@@ -102,7 +106,7 @@ DB·사용자 권한·영구 이력·비동기 Job·일정 저장은 AI 서버�
 
 `AI_ENV=development`, `AI_RECORD_IO=true`일 때 실제 FastAPI 요청·응답을 `input/`, `output/`에 기록합니다. 자료·발화 내용까지 확인하려면 `AI_RECORD_CONTENT=true`를 설정합니다. `production`에서는 기록이 비활성화됩니다.
 
-기능별 고정 파일명에 가장 최근 완료 요청을 저장하며 오류도 이전 결과를 덮어씁니다. 예: `analysis_input.json`/`analysis_output.json`, `questions_generate_input.json`/`questions_generate_output.json`, `study_time_input.json`/`study_time_output.json`. 본문 없는 GET 입력은 JSON `null`입니다. HTTP 응답 구조는 바꾸지 않습니다.
+기능별 고정 파일명에 가장 최근 완료 요청을 저장하며 오류도 이전 결과를 덮어씁니다. 예: `analysis_input.json`/`analysis_output.json`, `questions_generate_input.json`/`questions_generate_output.json`, `study_time_input.json`/`study_time_output.json`, `study_plan_input.json`/`study_plan_output.json`. 본문 없는 GET 입력은 JSON `null`입니다. HTTP 응답 구조는 바꾸지 않습니다.
 
 키·인증정보는 마스킹하고 PDF·이미지는 메타데이터만, 음성은 원본 대신 전사·종료 결과만 기록합니다. 기록 실패는 API 결과에 영향을 주지 않습니다. `.cache/diagnostics/gemini.jsonl`에는 개발용 단계·경과 시간·종료 코드·토큰 수 등 안전한 진단을 별도로 기록합니다.
 
@@ -118,7 +122,7 @@ DB·사용자 권한·영구 이력·비동기 Job·일정 저장은 AI 서버�
 
 자동 테스트는 직접 생성한 자료·Mock HTTP/WebSocket을 사용하며 외부 유료 API를 호출하지 않습니다. 실제 API 검증과 구분합니다. 최소 연결 테스트 `python -m tests.smoke_gemini`도 기본은 오프라인이며, 명시적으로 `--live`를 붙일 때만 실제 호출합니다.
 
-공개 YAML 계약 테스트는 루트 `swagger-api-final.yaml`이 있어야 실행됩니다. 현재 로컬 파일은 `test_data/`에 있고 이 폴더는 Git 제외 대상이므로, 루트 YAML이 없으면 해당 테스트는 건너뜁니다. 내부 API 응답 스냅샷은 `tests/fixtures/internal_openapi.json`으로 관리합니다.
+공개 YAML 계약 테스트는 루트 또는 `test_data/swagger-api-final.yaml`을 읽습니다. 두 경로 모두 없으면 해당 테스트를 건너뜁니다. `test_data/`는 Git 제외 대상이므로 새 환경에서는 팀 명세 파일을 별도로 제공해야 합니다. 내부 API 응답 스냅샷은 `tests/fixtures/internal_openapi.json`으로 관리합니다. 공개 YAML은 수정하지 않았으며 새 계획 생성 경로는 내부 API에만 추가했습니다.
 
 ## 주요 폴더
 
