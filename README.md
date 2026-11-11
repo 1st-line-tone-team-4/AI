@@ -17,7 +17,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-루트에 `.env`를 직접 만들고 키를 설정합니다. 아래 값은 예시이며 실제 키를 저장소에 올리지 않습니다. 모델 이름은 사용하는 계정에서 접근 가능한 값으로 설정합니다.
+루트에 `.env`를 직접 만들고 키를 설정합니다. 아래는 처음 실행할 때 생성·음성·기록을 꺼둔 예시이며, 현재 로컬 `.env` 값과 다를 수 있습니다. 실제 키는 저장소에 올리지 않습니다. 모델 이름은 사용하는 계정에서 접근 가능한 값으로 설정합니다.
 
 ```dotenv
 AI_SERVER_API_KEY=YOUR_SERVER_KEY
@@ -26,16 +26,18 @@ UPSTAGE_API_KEY=YOUR_UPSTAGE_KEY
 GEMINI_TEXT_MODEL=gemini-3.7-flash
 GEMINI_LIVE_MODEL=gemini-3.8-live
 AI_USE_SERVER_TEXT_KEY=true
+AI_ALLOW_UNLISTED_MODELS=true
 AI_LIVE_ENABLED=false
 GEMINI_LIVE_ENABLED=false
 AI_TIMEOUT_SECONDS=120
-AI_MAX_OUTPUT_TOKENS=8192
 AI_ENV=development
 AI_RECORD_IO=false
 AI_RECORD_CONTENT=false
 ```
 
 텍스트 생성은 `AI_LIVE_ENABLED=true`, 음성 연결은 `GEMINI_LIVE_ENABLED=true`로 켜고 서버를 재시작합니다. Upstage 인식은 이 두 설정과 별개로 실행될 수 있습니다. 실제 호출에는 사용량·비용이 발생할 수 있으며 자동 재시도·모델 변경은 하지 않습니다.
+
+`GEMINI_TEXT_MODEL`은 기본 텍스트 모델이며 요청의 `model_id`가 우선합니다. 음성은 별도의 `GEMINI_LIVE_MODEL`을 사용하며, 생략하면 `gemini-3.8-live`입니다. 출력 상한은 코드 기본값 8192토큰을 사용하므로 `AI_MAX_OUTPUT_TOKENS`는 변경할 때만 추가합니다. 요청·응답 기록을 켜는 방법은 아래 개발용 기록 항목을 참고합니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m api
@@ -60,6 +62,10 @@ Swagger의 **Authorize → ServerKey**에 `AI_SERVER_API_KEY`를 넣습니다. `
 ## 내부 API와 데이터 흐름
 
 아래 경로는 `/internal` 기준입니다. 정확한 필수 필드와 응답 타입은 `/docs`에서 확인합니다.
+
+백엔드 연동용 [ai-internal-api.yaml](ai-internal-api.yaml)에 HTTP 요청·응답, 인증·오류, 데이터 저장 책임과 음성 WebSocket 규약을 정리했습니다. OpenAPI 3.1 YAML이며 음성 규약은 `x-websocket`에 있습니다. 기존 사용자용 백엔드 명세와는 별도이고, 코드 변경 시 실제 `/openapi.json`과 대조해 갱신합니다.
+
+백엔드에서 전달한 최종 명세 이후 AI 서버에 학습 계획 생성·혼합 난이도·실시간 음성·상세 평가 등의 추가·변경 사항이 있어 현재 구현 기준의 내부 명세를 함께 제공합니다. 백엔드 연동 시 이 파일의 `x-integration-notes.public_backend_contract_differences`를 참고해 기존 명세와의 차이를 확인해 주세요. 기존 백엔드 최종 명세 자체를 수정한 것은 아닙니다.
 
 | 방식·경로 | 역할 |
 |---|---|
